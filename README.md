@@ -4,7 +4,9 @@ https://www.overleaf.com/read/vxyjkxsdpgsf
 
 edit: https://www.overleaf.com/2969827368gmmqgvjygrsg
 
+## Data Information
 
+### In Domain Data
 * Number of entries in datasets\indomain_train\nat_questions: 50000
 * Number of entries in datasets\indomain_train\newsqa: 50000
 * Number of entries in datasets\indomain_train\squad: 50000
@@ -13,6 +15,7 @@ edit: https://www.overleaf.com/2969827368gmmqgvjygrsg
 * Number of entries in datasets\indomain_val\newsqa: 4212
 * Number of entries in datasets\indomain_val\squad: 10570
 
+### Out of Domain Data
 * Number of entries in datasets\oodomain_train\duorc: 127
 * Number of entries in datasets\oodomain_train\race: 127
 * Number of entries in datasets\oodomain_train\relation_extraction: 127
