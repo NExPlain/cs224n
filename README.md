@@ -2,7 +2,8 @@
 ## Project proposal
 https://www.overleaf.com/read/vxyjkxsdpgsf
 
-edit: https://www.overleaf.com/2969827368gmmqgvjygrsg
+## Project milestone
+https://www.overleaf.com/6735196792ysddfkvfvxmr
 
 ## Data Information
 
