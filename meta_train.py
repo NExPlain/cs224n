@@ -159,7 +159,7 @@ class MetaLearningTrainer():
         self.log = log
         self.base_models = [DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)]\
                           * self.num_tasks
-        self.meta_model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+        self.meta_model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)
         self.train_datasets = []
         self.train_dataset_probabilities = []
         self.val_dataloader = None
