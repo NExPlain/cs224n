@@ -146,27 +146,26 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name):
 
 class MetaLearningTrainer():
     def __init__(self, base_model: torch.nn.Module, train_dir, val_dir, tokenizer, args, log):
-        self.args = args
-        self.log = log
-        self.base_model = base_model.to(args.device)
-        self.initial_base_params = {}
-        for name, params in base_model.named_parameters():
-            self.initial_base_params[name] = params.clone()
-        self.meta_params = {}
-        for name, params in base_model.named_parameters():
-            self.meta_params[name] = params.clone()
-        self.train_datasets = []
-        self.train_dataset_probabilities = []
-        self.val_dataloader = None
-        self.val_dict = None
-        self.add_datasets(train_dir, tokenizer, 'train')
-        self.add_datasets(val_dir, tokenizer, 'val')
         # meta-learning parameters
         self.meta_epoches = 1200
         self.num_tasks = 3
         self.k_gradient_steps = 5
         self.meta_lr = 3e-5
         self.global_idx = 0
+        self.path = os.path.join(args.save_dir, 'checkpoint')
+
+        # base model parameters
+        self.args = args
+        self.log = log
+        self.base_models = [DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)]\
+                          * self.num_tasks
+        self.meta_model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+        self.train_datasets = []
+        self.train_dataset_probabilities = []
+        self.val_dataloader = None
+        self.val_dict = None
+        self.add_datasets(train_dir, tokenizer, 'train')
+        self.add_datasets(val_dir, tokenizer, 'val')
 
     def add_datasets(self, data_dir, tokenizer, split_name):
         data_paths = [os.path.basename(path) for path in Path(data_dir).glob('*')]
@@ -183,27 +182,9 @@ class MetaLearningTrainer():
             self.val_dataloader = DataLoader(val_dataset, batch_size=self.args.batch_size, sampler=SequentialSampler(val_dataset))
             self.val_dict = val_dict
 
-    def save(self):
-        temp_params = {}
-        for name, params in  self.base_model.named_parameters():
-            temp_params[name] = params.clone()
-            params.data.copy_(self.meta_params[name])
-
-        path = os.path.join(self.args.save_dir, 'checkpoint')
-        self.base_model.save_pretrained(path)
-
-        for name, params in  self.base_model.named_parameters():
-            params.data.copy_(temp_params[name])
-
     def evaluate(self, data_loader, data_dict, return_preds=False, split='validation'):
-        temp_params = {}
-        for name, params in self.base_model.named_parameters():
-            temp_params[name] = params.clone()
-            params.data.copy_(self.meta_params[name])
-
         device = self.args.device
-        self.base_model.eval()
-        pred_dict = {}
+        self.meta_model.eval()
         all_start_logits = []
         all_end_logits = []
         with torch.no_grad(), \
@@ -213,7 +194,7 @@ class MetaLearningTrainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = self.base_model(input_ids, attention_mask=attention_mask)
+                outputs = self.meta_model(input_ids, attention_mask=attention_mask)
                 # Forward
                 start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 # TODO: compute loss
@@ -237,29 +218,26 @@ class MetaLearningTrainer():
                             ('EM', -1.0)]
         results = OrderedDict(results_list)
 
-        for name, params in  self.base_model.named_parameters():
-            params.data.copy_(temp_params[name])
-
         if return_preds:
             return preds, results
         return results
 
-    def train(self, train_dataloader):
+    def train(self, model, train_dataloader):
         device = self.args.device
-        optim = AdamW(self.base_model.parameters(), lr=self.args.lr)
+        optim = AdamW(model.parameters(), lr=self.args.lr)
         best_scores = {'F1': -1.0, 'EM': -1.0}
-        tbx = SummaryWriter(self.save_dir)
+        tbx = SummaryWriter(self.args.save_dir)
 
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
             for i in range(self.k_gradient_steps):
                 optim.zero_grad()
-                self.base_model.train()
+                model.train()
                 batch = next(train_dataloader)
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 start_positions = batch['start_positions'].to(device)
                 end_positions = batch['end_positions'].to(device)
-                outputs = self.base_model(input_ids, attention_mask=attention_mask,
+                outputs = model(input_ids, attention_mask=attention_mask,
                                 start_positions=start_positions,
                                 end_positions=end_positions)
                 loss = outputs[0]
@@ -276,25 +254,25 @@ class MetaLearningTrainer():
                     for k, v in curr_score.items():
                         tbx.add_scalar(f'val/{k}', v, self.global_idx)
                     self.log.info(f'Eval {results_str}')
-                    if self.visualize_predictions:
+                    if self.args.visualize_predictions:
                         util.visualize(tbx,
                                        pred_dict=preds,
                                        gold_dict=self.val_dict,
                                        step=self.global_idx,
                                        split='val',
-                                       num_visuals=self.num_visuals)
+                                       num_visuals=self.args.num_visuals)
                     if curr_score['F1'] >= best_scores['F1']:
                         best_scores = curr_score
-                        self.save()
+                        self.meta_model.save_pretrained(self.path)
                 self.global_idx += 1
 
     def update_meta_params(self):
-        for name, params in self.base_model.named_parameters():
-            self.meta_params[name] = torch.sum([self.meta_params[name], params], dim=0)
-
-    def reset_base_model_params(self):
-        for name, params in self.base_model.named_parameters():
-            params.data.copy_(self.initial_base_params[name])
+        for name, params in self.meta_model.named_parameters():
+            params_delta = torch.mean(torch.Tensor([base_model.named_parameters()[name] for base_model in self.base_models]), dim=0)
+            # meta_params = (1 - beta) * meta_params + beta * params_delta
+            params.data.copy_(params * (1 - self.meta_lr) + params_delta * self.meta_lr)
+            for base_model in self.base_models:
+                base_model.named_parameters()[name].data.copy_(params)
 
     def meta_train(self):
         data_loaders = [DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset))
@@ -304,17 +282,10 @@ class MetaLearningTrainer():
             self.log.info(f'Epoch: {epoch_num}')
             selected_tasks = np.random.choice(list(enumerate(data_loaders)), self.num_tasks, p=self.train_dataset_probabilities)
             for data_loader, index in selected_tasks:
-                # # Reconstruct the DataLoader if all batches are consumed.
-                # if len(data_loader.dataset) - data_loader_cursors[index] < self.k_gradient_steps:
-                #     data_loaders[index] = \
-                #         DataLoader(self.train_datasets[index], batch_size=self.args.batch_size, sampler=RandomSampler(self.train_datasets[index]))
-                #     data_loader_cursors[index] = 0
                 # Train model on the current task
-                self.train(data_loader)
-                # data_loader_cursors[index] += self.k_gradient_steps
-                # Update meta-learning parameters and reset base model parameters.
-                self.update_meta_params()
-                self.reset_base_model_params()
+                self.train(self.base_models[index], data_loader)
+            # Update meta-learning parameters and reset base model parameters.
+            self.update_meta_params()
 
 def main():
     # define parser and arguments
