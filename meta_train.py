@@ -156,6 +156,7 @@ class MetaLearningTrainer():
 
         # base model parameters
         self.args = args
+        self.args = args
         self.log = log
         self.base_models = [DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)]\
                           * self.num_tasks
@@ -168,10 +169,9 @@ class MetaLearningTrainer():
         self.add_datasets(val_dir, tokenizer, 'val')
 
     def add_datasets(self, data_dir, tokenizer, split_name):
-        data_paths = [os.path.basename(path) for path in Path(data_dir).glob('*')]
+        data_paths = [os.path.basename(path) for path in Path(data_dir).glob('*') if not str(path).endswith('.pt')]
         if split_name == 'train':
             for data_path in data_paths:
-                print("(duanr) data dir:", data_dir, "; data path:", data_path)
                 train_dataset, train_dict = get_dataset(self.args, data_path, data_dir, tokenizer, split_name)
                 self.train_datasets.append(train_dataset)
                 self.train_dataset_probabilities.append(len(train_dict))
@@ -229,7 +229,8 @@ class MetaLearningTrainer():
         tbx = SummaryWriter(self.args.save_dir)
 
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
-            for i in range(self.k_gradient_steps):
+            # for i in range(self.k_gradient_steps):
+            for batch in train_dataloader:
                 optim.zero_grad()
                 model.train()
                 batch = next(train_dataloader)
@@ -275,15 +276,17 @@ class MetaLearningTrainer():
                 base_model.named_parameters()[name].data.copy_(params)
 
     def meta_train(self):
-        data_loaders = [DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset))
-                        for train_dataset in self.train_datasets]
+        data_loaders = [
+            iter(DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset)))
+            for train_dataset in self.train_datasets]
         # data_loader_cursors = [0] * len(self.train_datasets)
         for epoch_num in range(self.meta_epoches):
             self.log.info(f'Epoch: {epoch_num}')
-            selected_tasks = np.random.choice(list(enumerate(data_loaders)), self.num_tasks, p=self.train_dataset_probabilities)
-            for data_loader, index in selected_tasks:
+            selected_task_indices = np.random.choice(range(len(data_loaders)), self.num_tasks,
+                                              p=self.train_dataset_probabilities)
+            for index in selected_task_indices:
                 # Train model on the current task
-                self.train(self.base_models[index], data_loader)
+                self.train(self.base_models[index], data_loaders[index])
             # Update meta-learning parameters and reset base model parameters.
             self.update_meta_params()
 
