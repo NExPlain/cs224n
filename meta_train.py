@@ -156,7 +156,6 @@ class MetaLearningTrainer():
 
         # base model parameters
         self.args = args
-        self.args = args
         self.log = log
         self.base_models = [DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)]\
                           * self.num_tasks
@@ -230,6 +229,9 @@ class MetaLearningTrainer():
 
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
             for i in range(self.k_gradient_steps):
+                for param in model.parameters():
+                    print("train param[0][0]", param[0][0])
+                    break
                 optim.zero_grad()
                 model.train()
                 batch = next(train_dataloader)
@@ -243,6 +245,9 @@ class MetaLearningTrainer():
                 loss = outputs[0]
                 loss.backward()
                 optim.step()
+                for param in model.parameters():
+                    print("train param[0][0]", param[0][0])
+                    break
                 progress_bar.update(i + 1)
                 progress_bar.set_postfix( NLL=loss.item())
                 tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
@@ -268,28 +273,62 @@ class MetaLearningTrainer():
 
     def update_meta_params(self):
         # meta_params = (1 - beta) * meta_params + beta * params_delta
+        print("enter update_meta_params.")
+        flag = True
         for meta_param in self.meta_model.parameters():
+            if flag:
+                print("meta_param[0][0] 1:", meta_param[0][0])
             meta_param.data.copy_(meta_param.data * (1 - self.meta_lr))
+            if flag:
+                print("meta_param[0][0] 2:", meta_param[0][0])
+                flag = False
+        flag = True
         for base_model in self.base_models:
             for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
                 meta_param.data.copy_(meta_param.data + base_param.data * self.meta_lr / self.num_tasks)
+                if flag:
+                    print("meta_param[0][0] 3:", meta_param[0][0])
+                    print("base_param[0][0] 3:", base_param[0][0])
+                    flag = False
         # propagate meta_params to base_params
+        flag = True
         for base_model in self.base_models:
             for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
+                if flag:
+                    print("base_param[0][0] 4:", base_param[0][0])
                 base_param.data.copy_(meta_param.data)
+                if flag:
+                    print("base_param[0][0] 4:", base_param[0][0])
+                    flag = False
+
 
     def meta_train(self):
-        data_loaders = [
-            iter(DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset)))
+        data_loaders = [DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset))
             for train_dataset in self.train_datasets]
-        # data_loader_cursors = [0] * len(self.train_datasets)
+        data_loaders_iterators = [iter(data_loader) for data_loader in data_loaders]
+        data_loader_cursors = [0] * len(self.train_datasets)
         for epoch_num in range(self.meta_epoches):
             self.log.info(f'Epoch: {epoch_num}')
             selected_task_indices = np.random.choice(range(len(data_loaders)), self.num_tasks,
                                               p=self.train_dataset_probabilities)
-            for index in selected_task_indices:
+            for i, selected_index in enumerate(selected_task_indices):
+                # Reconstruct the DataLoader if all batches are consumed.
+                if len(data_loaders[selected_index].dataset) - data_loader_cursors[
+                    selected_index] < self.k_gradient_steps * self.args.batch_size:
+                    data_loaders[selected_index] = \
+                        DataLoader(self.train_datasets[selected_index], batch_size=self.args.batch_size,
+                                   sampler=RandomSampler(self.train_datasets[selected_index]))
+                    data_loaders_iterators[selected_index] = iter(data_loaders[selected_index])
+                    data_loader_cursors[selected_index] = 0
                 # Train model on the current task
-                self.train(self.base_models[index], data_loaders[index])
+                # try:
+                self.train(self.base_models[i], data_loaders_iterators[selected_index])
+                data_loader_cursors[selected_index] += self.k_gradient_steps * self.args.batch_size
+                # except:
+                #     print("i, selected_index:", i, selected_index)
+                #     print("len(data_loaders[selected_index].dataset):", len(data_loaders[selected_index].dataset))
+                #     print("data_loader_cursors[selected_index]:", data_loader_cursors[selected_index])
+                #     print("self.k_gradient_steps:", self.k_gradient_steps)
             # Update meta-learning parameters and reset base model parameters.
             self.update_meta_params()
 
@@ -298,7 +337,9 @@ def main():
     args = get_train_test_args()
 
     util.set_seed(args.seed)
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
+    # model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:
@@ -318,7 +359,6 @@ def main():
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         split_name = 'test' if 'test' in args.eval_dir else 'validation'
         log = util.get_logger(args.save_dir, f'log_{split_name}')
-        checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
         model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
         trainer = MetaLearningTrainer(
