@@ -229,8 +229,7 @@ class MetaLearningTrainer():
         tbx = SummaryWriter(self.args.save_dir)
 
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
-            # for i in range(self.k_gradient_steps):
-            for batch in train_dataloader:
+            for i in range(self.k_gradient_steps):
                 optim.zero_grad()
                 model.train()
                 batch = next(train_dataloader)
