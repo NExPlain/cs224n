@@ -19,4 +19,4 @@ Copy all files in datasets/indomain_val and datasets/oodomain_val to meta_val/.
 Move meta_train.py to the same directory as train.py.
 
 ### Step 5
-Execute command `python meta_train.py --run-name meta_baseline --lr 1e-3 --do-train` and debug.
+Execute command `python meta_train.py --run-name meta_baseline --lr 1e-3 --do-train`.
