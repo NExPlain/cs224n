@@ -247,7 +247,7 @@ class MetaLearningTrainer():
                 progress_bar.set_postfix( NLL=loss.item())
                 tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
                 if self.global_idx % self.args.eval_every == 0:
-                    self.log.info(f'Evaluating at step {self.args.global_idx}...')
+                    self.log.info(f'Evaluating at step {self.global_idx}...')
                     preds, curr_score = self.evaluate(self.val_dataloader, self.val_dict, return_preds=True)
                     results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
                     self.log.info('Visualizing in TensorBoard...')
@@ -267,12 +267,16 @@ class MetaLearningTrainer():
                 self.global_idx += 1
 
     def update_meta_params(self):
-        for name, params in self.meta_model.named_parameters():
-            params_delta = torch.mean(torch.Tensor([base_model.named_parameters()[name] for base_model in self.base_models]), dim=0)
-            # meta_params = (1 - beta) * meta_params + beta * params_delta
-            params.data.copy_(params * (1 - self.meta_lr) + params_delta * self.meta_lr)
-            for base_model in self.base_models:
-                base_model.named_parameters()[name].data.copy_(params)
+        # meta_params = (1 - beta) * meta_params + beta * params_delta
+        for meta_param in self.meta_model.parameters():
+            meta_param.data.copy_(meta_param.data * (1 - self.meta_lr))
+        for base_model in self.base_models:
+            for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
+                meta_param.data.copy_(meta_param.data + base_param.data * self.meta_lr / self.num_tasks)
+        # propagate meta_params to base_params
+        for base_model in self.base_models:
+            for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
+                base_param.data.copy_(meta_param.data)
 
     def meta_train(self):
         data_loaders = [
