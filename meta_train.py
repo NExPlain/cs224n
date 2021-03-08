@@ -150,7 +150,7 @@ class MetaLearningTrainer():
         self.meta_epoches = 1200
         self.num_tasks = 3
         self.k_gradient_steps = 5
-        self.meta_lr = 3e-5
+        self.meta_lr = args.meta_lr
         self.global_idx = 0
         self.path = os.path.join(args.save_dir, 'checkpoint')
 
@@ -166,6 +166,8 @@ class MetaLearningTrainer():
         self.val_dict = None
         self.add_datasets(train_dir, tokenizer, 'train')
         self.add_datasets(val_dir, tokenizer, 'val')
+
+        self.tbx = SummaryWriter(self.args.save_dir)
 
     def add_datasets(self, data_dir, tokenizer, split_name):
         data_paths = [os.path.basename(path) for path in Path(data_dir).glob('*') if not str(path).endswith('.pt')]
@@ -225,13 +227,9 @@ class MetaLearningTrainer():
         device = self.args.device
         optim = AdamW(model.parameters(), lr=self.args.lr)
         best_scores = {'F1': -1.0, 'EM': -1.0}
-        tbx = SummaryWriter(self.args.save_dir)
 
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
             for i in range(self.k_gradient_steps):
-                for param in model.parameters():
-                    print("train param[0][0]", param[0][0])
-                    break
                 optim.zero_grad()
                 model.train()
                 batch = next(train_dataloader)
@@ -245,22 +243,19 @@ class MetaLearningTrainer():
                 loss = outputs[0]
                 loss.backward()
                 optim.step()
-                for param in model.parameters():
-                    print("train param[0][0]", param[0][0])
-                    break
                 progress_bar.update(i + 1)
                 progress_bar.set_postfix( NLL=loss.item())
-                tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
+                self.tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
                 if self.global_idx % self.args.eval_every == 0:
                     self.log.info(f'Evaluating at step {self.global_idx}...')
                     preds, curr_score = self.evaluate(self.val_dataloader, self.val_dict, return_preds=True)
                     results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
                     self.log.info('Visualizing in TensorBoard...')
                     for k, v in curr_score.items():
-                        tbx.add_scalar(f'val/{k}', v, self.global_idx)
+                        self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
                     self.log.info(f'Eval {results_str}')
                     if self.args.visualize_predictions:
-                        util.visualize(tbx,
+                        util.visualize(self.tbx,
                                        pred_dict=preds,
                                        gold_dict=self.val_dict,
                                        step=self.global_idx,
@@ -273,33 +268,15 @@ class MetaLearningTrainer():
 
     def update_meta_params(self):
         # meta_params = (1 - beta) * meta_params + beta * params_delta
-        print("enter update_meta_params.")
-        flag = True
         for meta_param in self.meta_model.parameters():
-            if flag:
-                print("meta_param[0][0] 1:", meta_param[0][0])
             meta_param.data.copy_(meta_param.data * (1 - self.meta_lr))
-            if flag:
-                print("meta_param[0][0] 2:", meta_param[0][0])
-                flag = False
-        flag = True
         for base_model in self.base_models:
             for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
                 meta_param.data.copy_(meta_param.data + base_param.data * self.meta_lr / self.num_tasks)
-                if flag:
-                    print("meta_param[0][0] 3:", meta_param[0][0])
-                    print("base_param[0][0] 3:", base_param[0][0])
-                    flag = False
         # propagate meta_params to base_params
-        flag = True
         for base_model in self.base_models:
             for meta_param, base_param in zip(self.meta_model.parameters(), base_model.parameters()):
-                if flag:
-                    print("base_param[0][0] 4:", base_param[0][0])
                 base_param.data.copy_(meta_param.data)
-                if flag:
-                    print("base_param[0][0] 4:", base_param[0][0])
-                    flag = False
 
 
     def meta_train(self):
@@ -321,14 +298,8 @@ class MetaLearningTrainer():
                     data_loaders_iterators[selected_index] = iter(data_loaders[selected_index])
                     data_loader_cursors[selected_index] = 0
                 # Train model on the current task
-                # try:
                 self.train(self.base_models[i], data_loaders_iterators[selected_index])
                 data_loader_cursors[selected_index] += self.k_gradient_steps * self.args.batch_size
-                # except:
-                #     print("i, selected_index:", i, selected_index)
-                #     print("len(data_loaders[selected_index].dataset):", len(data_loaders[selected_index].dataset))
-                #     print("data_loader_cursors[selected_index]:", data_loader_cursors[selected_index])
-                #     print("self.k_gradient_steps:", self.k_gradient_steps)
             # Update meta-learning parameters and reset base model parameters.
             self.update_meta_params()
 
@@ -338,8 +309,8 @@ def main():
 
     util.set_seed(args.seed)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-    # model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-    model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    # model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:
