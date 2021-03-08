@@ -147,7 +147,7 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name):
 class MetaLearningTrainer():
     def __init__(self, base_model: torch.nn.Module, train_dir, val_dir, tokenizer, args, log):
         # meta-learning parameters
-        self.meta_epoches = 1200
+        self.meta_epoches = 6000
         self.num_tasks = 3
         self.k_gradient_steps = 5
         self.meta_lr = args.meta_lr
@@ -309,8 +309,8 @@ def main():
 
     util.set_seed(args.seed)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-    # model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+    # model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:
