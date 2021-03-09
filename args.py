@@ -3,6 +3,7 @@ import argparse
 def get_train_test_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch-size', type=int, default=24) # default 16
+    parser.add_argument('--meta-epochs', type=int, default=1200)
     parser.add_argument('--num-epochs', type=int, default=3)
     parser.add_argument('--meta-lr', type=float, default=5e-5)
     parser.add_argument('--lr', type=float, default=1e-3)

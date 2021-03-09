@@ -147,7 +147,7 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name):
 class MetaLearningTrainer():
     def __init__(self, base_model: torch.nn.Module, train_dir, val_dir, tokenizer, args, log):
         # meta-learning parameters
-        self.meta_epoches = 6000
+        self.meta_epochs = args.meta_epochs
         self.num_tasks = 3
         self.k_gradient_steps = 5
         self.meta_lr = args.meta_lr
@@ -284,7 +284,7 @@ class MetaLearningTrainer():
             for train_dataset in self.train_datasets]
         data_loaders_iterators = [iter(data_loader) for data_loader in data_loaders]
         data_loader_cursors = [0] * len(self.train_datasets)
-        for epoch_num in range(self.meta_epoches):
+        for epoch_num in range(self.meta_epochs):
             self.log.info(f'Epoch: {epoch_num}')
             selected_task_indices = np.random.choice(range(len(data_loaders)), self.num_tasks,
                                               p=self.train_dataset_probabilities)
