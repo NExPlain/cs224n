@@ -162,10 +162,16 @@ class MetaLearningTrainer():
         self.meta_model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased").to(args.device)
         self.train_datasets = []
         self.train_dataset_probabilities = []
+        self.train_dicts = []
         self.val_dataloader = None
         self.val_dict = None
         self.add_datasets(train_dir, tokenizer, 'train')
         self.add_datasets(val_dir, tokenizer, 'val')
+
+        self.data_loaders = [DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset))
+                        for train_dataset in self.train_datasets]
+        self.data_loaders_iterators = [iter(data_loader) for data_loader in self.data_loaders]
+        self.data_loader_cursors = [0] * len(self.train_datasets)
 
         self.tbx = SummaryWriter(self.args.save_dir)
 
@@ -176,16 +182,17 @@ class MetaLearningTrainer():
                 train_dataset, train_dict = get_dataset(self.args, data_path, data_dir, tokenizer, split_name)
                 self.train_datasets.append(train_dataset)
                 self.train_dataset_probabilities.append(len(train_dict))
+                self.train_dicts.append(train_dict)
             total_num_entries = sum(self.train_dataset_probabilities)
-            self.train_dataset_probabilities = [prob / total_num_entries for prob in  self.train_dataset_probabilities]
+            self.train_dataset_probabilities = [prob / total_num_entries for prob in self.train_dataset_probabilities]
         else:
             val_dataset, val_dict = get_dataset(self.args, ','.join(data_paths), data_dir, tokenizer, split_name)
             self.val_dataloader = DataLoader(val_dataset, batch_size=self.args.batch_size, sampler=SequentialSampler(val_dataset))
             self.val_dict = val_dict
 
-    def evaluate(self, data_loader, data_dict, return_preds=False, split='validation'):
+    def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
         device = self.args.device
-        self.meta_model.eval()
+        model.eval()
         all_start_logits = []
         all_end_logits = []
         with torch.no_grad(), \
@@ -195,7 +202,7 @@ class MetaLearningTrainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = self.meta_model(input_ids, attention_mask=attention_mask)
+                outputs = model(input_ids, attention_mask=attention_mask)
                 # Forward
                 start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 # TODO: compute loss
@@ -223,16 +230,50 @@ class MetaLearningTrainer():
             return preds, results
         return results
 
-    def train(self, model, train_dataloader):
+    def eval_helper(self, model, selected_index):
+        train_dataloader = self.data_loaders[selected_index] = \
+            DataLoader(self.train_datasets[selected_index], batch_size=self.args.batch_size,
+                       sampler=RandomSampler(self.train_datasets[selected_index]))
+        train_dict = self.train_dicts[selected_index]
+
+        self.log.info(f'1Evaluating at step {self.global_idx}...')
+        preds, curr_score = self.evaluate(model, train_dataloader, train_dict, return_preds=True)
+        results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
+        self.log.info('Visualizing in TensorBoard...')
+        for k, v in curr_score.items():
+            self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
+        self.log.info(f'Eval {results_str}')
+        if self.args.visualize_predictions:
+            util.visualize(self.tbx,
+                           pred_dict=preds,
+                           gold_dict=self.val_dict,
+                           step=self.global_idx,
+                           split='val',
+                           num_visuals=self.args.num_visuals)
+
+    def train(self, model, selected_index):
         device = self.args.device
         optim = AdamW(model.parameters(), lr=self.args.lr)
         best_scores = {'F1': -1.0, 'EM': -1.0}
 
+        self.log.info("Evaluate before training base model...")
+        self.eval_helper(model, selected_index)
+
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
             for i in range(self.k_gradient_steps):
+                if self.data_loader_cursors[selected_index] + 1 >= len(self.data_loaders[selected_index].dataset):
+                    self.data_loaders[selected_index] = \
+                        DataLoader(self.train_datasets[selected_index], batch_size=self.args.batch_size,
+                                   sampler=RandomSampler(self.train_datasets[selected_index]))
+                    self.data_loaders_iterators[selected_index] = iter(self.data_loaders[selected_index])
+                    self.data_loader_cursors[selected_index] = 0
+
                 optim.zero_grad()
                 model.train()
-                batch = next(train_dataloader)
+
+                batch = next(self.data_loaders_iterators[selected_index])
+                self.data_loader_cursors[selected_index] += self.args.batch_size
+
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 start_positions = batch['start_positions'].to(device)
@@ -241,30 +282,34 @@ class MetaLearningTrainer():
                                 start_positions=start_positions,
                                 end_positions=end_positions)
                 loss = outputs[0]
+                print("============= loss =============:", loss.item())
                 loss.backward()
                 optim.step()
                 progress_bar.update(i + 1)
-                progress_bar.set_postfix( NLL=loss.item())
+                progress_bar.set_postfix(NLL=loss.item())
                 self.tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
-                if self.global_idx % self.args.eval_every == 0:
-                    self.log.info(f'Evaluating at step {self.global_idx}...')
-                    preds, curr_score = self.evaluate(self.val_dataloader, self.val_dict, return_preds=True)
-                    results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
-                    self.log.info('Visualizing in TensorBoard...')
-                    for k, v in curr_score.items():
-                        self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
-                    self.log.info(f'Eval {results_str}')
-                    if self.args.visualize_predictions:
-                        util.visualize(self.tbx,
-                                       pred_dict=preds,
-                                       gold_dict=self.val_dict,
-                                       step=self.global_idx,
-                                       split='val',
-                                       num_visuals=self.args.num_visuals)
-                    if curr_score['F1'] >= best_scores['F1']:
-                        best_scores = curr_score
-                        self.meta_model.save_pretrained(self.path)
-                self.global_idx += 1
+                # if self.global_idx % self.args.eval_every == 0:
+                #     self.log.info(f'Evaluating at step {self.global_idx}...')
+                #     preds, curr_score = self.evaluate(self.val_dataloader, self.val_dict, return_preds=True)
+                #     results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
+                #     self.log.info('Visualizing in TensorBoard...')
+                #     for k, v in curr_score.items():
+                #         self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
+                #     self.log.info(f'Eval {results_str}')
+                #     if self.args.visualize_predictions:
+                #         util.visualize(self.tbx,
+                #                        pred_dict=preds,
+                #                        gold_dict=self.val_dict,
+                #                        step=self.global_idx,
+                #                        split='val',
+                #                        num_visuals=self.args.num_visuals)
+                #     if curr_score['F1'] >= best_scores['F1']:
+                #         best_scores = curr_score
+                #         self.meta_model.save_pretrained(self.path)
+                # self.global_idx += 1
+
+        self.log.info("Evaluate after training base model...")
+        self.eval_helper(model, selected_index)
 
     def update_meta_params(self):
         # meta_params = (1 - beta) * meta_params + beta * params_delta
@@ -280,26 +325,13 @@ class MetaLearningTrainer():
 
 
     def meta_train(self):
-        data_loaders = [DataLoader(train_dataset, batch_size=self.args.batch_size, sampler=RandomSampler(train_dataset))
-            for train_dataset in self.train_datasets]
-        data_loaders_iterators = [iter(data_loader) for data_loader in data_loaders]
-        data_loader_cursors = [0] * len(self.train_datasets)
         for epoch_num in range(self.meta_epochs):
             self.log.info(f'Epoch: {epoch_num}')
-            selected_task_indices = np.random.choice(range(len(data_loaders)), self.num_tasks,
+            selected_task_indices = np.random.choice(range(len(self.data_loaders)), self.num_tasks,
                                               p=self.train_dataset_probabilities)
             for i, selected_index in enumerate(selected_task_indices):
-                # Reconstruct the DataLoader if all batches are consumed.
-                if len(data_loaders[selected_index].dataset) - data_loader_cursors[
-                    selected_index] < self.k_gradient_steps * self.args.batch_size:
-                    data_loaders[selected_index] = \
-                        DataLoader(self.train_datasets[selected_index], batch_size=self.args.batch_size,
-                                   sampler=RandomSampler(self.train_datasets[selected_index]))
-                    data_loaders_iterators[selected_index] = iter(data_loaders[selected_index])
-                    data_loader_cursors[selected_index] = 0
                 # Train model on the current task
-                self.train(self.base_models[i], data_loaders_iterators[selected_index])
-                data_loader_cursors[selected_index] += self.k_gradient_steps * self.args.batch_size
+                self.train(self.base_models[i], selected_index)
             # Update meta-learning parameters and reset base model parameters.
             self.update_meta_params()
 
@@ -309,8 +341,8 @@ def main():
 
     util.set_seed(args.seed)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-    # model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-    model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    # model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:
@@ -320,7 +352,8 @@ def main():
         log = util.get_logger(args.save_dir, 'log_train')
         log.info(f'Args: {json.dumps(vars(args), indent=4, sort_keys=True)}')
         log.info("Preparing Training Data...")
-        args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        # args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        args.device = torch.device('cpu')
         trainer = MetaLearningTrainer(
             model, train_dir="datasets/meta_train/", val_dir="datasets/meta_val",
             tokenizer=tokenizer, args=args, log=log
