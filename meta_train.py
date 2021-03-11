@@ -149,7 +149,7 @@ class MetaLearningTrainer():
         # meta-learning parameters
         self.meta_epochs = args.meta_epochs
         self.num_tasks = 3
-        self.k_gradient_steps = 5
+        self.k_gradient_steps = 3
         self.meta_lr = args.meta_lr
         self.global_idx = 0
         self.path = os.path.join(args.save_dir, 'checkpoint')
@@ -256,9 +256,6 @@ class MetaLearningTrainer():
         optim = AdamW(model.parameters(), lr=self.args.lr)
         best_scores = {'F1': -1.0, 'EM': -1.0}
 
-        self.log.info("Evaluate before training base model...")
-        self.eval_helper(model, selected_index)
-
         with torch.enable_grad(), tqdm(total=self.k_gradient_steps) as progress_bar:
             for i in range(self.k_gradient_steps):
                 if self.data_loader_cursors[selected_index] + 1 >= len(self.data_loaders[selected_index].dataset):
@@ -282,34 +279,30 @@ class MetaLearningTrainer():
                                 start_positions=start_positions,
                                 end_positions=end_positions)
                 loss = outputs[0]
-                print("============= loss =============:", loss.item())
                 loss.backward()
                 optim.step()
                 progress_bar.update(i + 1)
                 progress_bar.set_postfix(NLL=loss.item())
                 self.tbx.add_scalar('train/NLL', loss.item(), self.global_idx)
-                # if self.global_idx % self.args.eval_every == 0:
-                #     self.log.info(f'Evaluating at step {self.global_idx}...')
-                #     preds, curr_score = self.evaluate(self.val_dataloader, self.val_dict, return_preds=True)
-                #     results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
-                #     self.log.info('Visualizing in TensorBoard...')
-                #     for k, v in curr_score.items():
-                #         self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
-                #     self.log.info(f'Eval {results_str}')
-                #     if self.args.visualize_predictions:
-                #         util.visualize(self.tbx,
-                #                        pred_dict=preds,
-                #                        gold_dict=self.val_dict,
-                #                        step=self.global_idx,
-                #                        split='val',
-                #                        num_visuals=self.args.num_visuals)
-                #     if curr_score['F1'] >= best_scores['F1']:
-                #         best_scores = curr_score
-                #         self.meta_model.save_pretrained(self.path)
-                # self.global_idx += 1
-
-        self.log.info("Evaluate after training base model...")
-        self.eval_helper(model, selected_index)
+                if self.global_idx % self.args.eval_every == 0:
+                    self.log.info(f'Evaluating at step {self.global_idx}...')
+                    preds, curr_score = self.evaluate(model, self.val_dataloader, self.val_dict, return_preds=True)
+                    results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
+                    self.log.info('Visualizing in TensorBoard...')
+                    for k, v in curr_score.items():
+                        self.tbx.add_scalar(f'val/{k}', v, self.global_idx)
+                    self.log.info(f'Eval {results_str}')
+                    if self.args.visualize_predictions:
+                        util.visualize(self.tbx,
+                                       pred_dict=preds,
+                                       gold_dict=self.val_dict,
+                                       step=self.global_idx,
+                                       split='val',
+                                       num_visuals=self.args.num_visuals)
+                    if curr_score['F1'] >= best_scores['F1']:
+                        best_scores = curr_score
+                        self.meta_model.save_pretrained(self.path)
+                self.global_idx += 1
 
     def update_meta_params(self):
         # meta_params = (1 - beta) * meta_params + beta * params_delta
