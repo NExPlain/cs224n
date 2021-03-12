@@ -13,9 +13,14 @@ f = open('duorc')
 j = json.load(f)
 
 def read(path):
-    contexts = [] # 1D
-    questions_list = [] # 2D
-    answers_starts_list_list = [] # 3D
+    # 1D, context where the model finds answer from.
+    contexts = []
+    # 2D, for each context, there is a list of questions regarding this context.
+    questions_list = []
+    # 3D, for each question, there is a list of potential answers. Each of the answer has a character level starting
+    # index in the context.
+    answers_starts_list_list = []
+    # 3D, for each question, there is a list of potential answers. This is the text of the answer.
     texts_list_list = [] # 3D
 
     f = open(path)
