@@ -1,16 +1,12 @@
 import json
 
 # ['data'][0]['paragraphs'][0]
-#
 # - ['context']
 # - ['qas'][0]
 #   - ['questions']
 #   - ['answers'][0]
 #     - ['text']
 #     - ['answer_start']
-
-f = open('duorc')
-j = json.load(f)
 
 def read(path):
     # 1D, context where the model finds answer from.
@@ -48,6 +44,9 @@ def read(path):
 
     return contexts, questions_list, answers_starts_list_list, texts_list_list
 
+# f = open('duorc')
+# j = json.load(f)
+#
 # lengths = []
 #
 # for x in j['data']:
