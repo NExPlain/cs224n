@@ -334,8 +334,8 @@ def main():
 
     util.set_seed(args.seed)
     checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
-    # model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+    # model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:
@@ -345,10 +345,10 @@ def main():
         log = util.get_logger(args.save_dir, 'log_train')
         log.info(f'Args: {json.dumps(vars(args), indent=4, sort_keys=True)}')
         log.info("Preparing Training Data...")
-        # args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        args.device = torch.device('cpu')
+        args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        # args.device = torch.device('cpu')
         trainer = MetaLearningTrainer(
-            model, train_dir="datasets/meta_train/", val_dir="datasets/meta_val",
+            model, train_dir=args.train_dir, val_dir=args.val_dir,
             tokenizer=tokenizer, args=args, log=log
         )
         trainer.meta_train()
@@ -359,14 +359,14 @@ def main():
         model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
         trainer = MetaLearningTrainer(
-            model, train_dir="datasets/meta_train/", val_dir="datasets/meta_val",
+            model, train_dir="datasets/oodomain_train/", val_dir="datasets/oodomain_val",
             tokenizer=tokenizer, args=args, log=log
         )
         eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
         eval_loader = DataLoader(eval_dataset,
                                  batch_size=args.batch_size,
                                  sampler=SequentialSampler(eval_dataset))
-        eval_preds, eval_scores = trainer.evaluate(eval_loader,
+        eval_preds, eval_scores = trainer.evaluate(model, eval_loader,
                                                    eval_dict, return_preds=True,
                                                    split=split_name)
         results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in eval_scores.items())
