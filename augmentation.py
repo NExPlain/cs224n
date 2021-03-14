@@ -19,59 +19,54 @@ from nlpaug.util import Action
 def read_and_write(path):
     # 1D, context where the model finds answer from.
     contexts = []
-    # 2D, for each context, there is a list of questions regarding this context.
-    questions_list = []
-    # 3D, for each question, there is a list of potential answers. Each of the answer has a character level starting
+    # 1D, for each context, there is a list of questions regarding this context.
+    questions = []
+    # 1D, for each question, there is a list of potential answers. Each of the answer has a character level starting
     # index in the context.
-    answers_starts_list_list = []
-    # 3D, for each question, there is a list of potential answers. This is the text of the answer.
-    texts_list_list = [] # 3D
+    answer_starts = []
+    # 1D, for each question, there is a list of potential answers. This is the text of the answer.
+    texts = []
+    # 1D
+    answer_num_in_contexts = []
 
     f = open(path)
-    j = json.load(f)
+    js = json.load(f)
 
-    for x in j['data']:
+    for x in js['data']:
         for y in x['paragraphs']:
             contexts.append(y['context'])
-            questions = []
-            answers_starts_list = []
-            texts_list = []
+            cursor = 0
             for z in y['qas']:
                 questions.append(z['question'])
-                answers_starts = []
-                texts = []
                 for a in z['answers']:
-                    answers_starts.append(a['answer_start'])
+                    answer_starts.append(a['answer_start'])
                     texts.append(a['text'])
-                answers_starts_list.append(answers_starts)
-                texts_list.append(texts)
-            questions_list.append(questions)
-            answers_starts_list_list.append(answers_starts_list)
-            texts_list_list.append(texts_list)
+                    cursor += 1
+            answer_num_in_contexts.append(cursor)
 
-    new_contexts, new_questions_list, new_answers_starts_list_list, new_texts_list_list = \
-        process(contexts, questions_list, answers_starts_list_list, texts_list_list)
+    print(len(contexts), len(questions), len(answer_starts), len(texts))
+    print(answer_num_in_contexts)
 
-    i, j, k = 0, 0, 0
-    for x in range(len(j['data'])):
-        for y in range(len(j['data'][x]['paragraphs'])):
-            j['data'][x]['paragraphs'][y]['context'] = new_contexts[i]
-            for z in range(len(j['data'][x]['paragraphs'][y]['context']['qas'])):
-                for a in range(len(j['data'][x]['paragraphs'][y]['context']['qas'][z]['answers'])):
-                    j['data'][x]['paragraphs'][y]['context']['qas'][z]['answers'][a]['answer_start'] = \
-                        new_answers_starts_list_list[i][j][k]
-                    j['data'][x]['paragraphs'][y]['context']['qas'][z]['answers'][a]['text'] = \
-                        new_texts_list_list[i][j][k]
-                    k += 1
-                j += 1
+    new_contexts, new_questions, new_answer_starts, new_texts = \
+        process(contexts, questions, answer_starts, texts, answer_num_in_contexts, js)
+
+    i, j = 0, 0
+    for x in range(len(js['data'])):
+        for y in range(len(js['data'][x]['paragraphs'])):
+            js['data'][x]['paragraphs'][y]['context'] = new_contexts[i]
+            for z in range(len(js['data'][x]['paragraphs'][y]['qas'])):
+                for a in range(len(js['data'][x]['paragraphs'][y]['qas'][z]['answers'])):
+                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['answer_start'] = new_answer_starts[j]
+                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['text'] = new_texts[j]
+                    j += 1
             i += 1
 
-    outfile = str(path) + "_augmented"
-    json.dump(j, outfile)
+    outfile = open(str(path) + "_augmented", 'w')
+    json.dump(js, outfile)
 
 def find_stop_index(sorted_changes, value):
     for i in range(len(sorted_changes)):
-        if value < sorted_changes['orig_start_pos']:
+        if value < sorted_changes[i]['orig_start_pos']:
             return i
     return len(sorted_changes)
 
@@ -82,35 +77,31 @@ def find_replaced_word(old_start_index, text, sorted_changes):
         if old_start_index <= change['orig_start_pos'] < old_end_index:
             text = text[:change['orig_start_pos'] + delta] + change['new_token'] + \
                    text[change['orig_start_pos'] + len(change['orig_token']) + delta:]
-            delta += len(change['new_token'] - change['orig_token'])
+            delta += len(change['new_token']) - len(change['orig_token'])
     return text
 
 
-def process(contexts, questions_list, answers_starts_list_list, texts_list_list):
+def process(contexts, questions, answer_starts, texts, answer_num_in_contexts, js):
     new_contexts = []
-    new_questions_list = questions_list
-    new_answers_starts_list_list = []
-    new_texts_list_list = []
-    # aug = naw.SynonymAug(aug_src='wordnet', lang='eng')
-    aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased', include_detail=True)
+    new_questions = questions
+    new_answer_starts = []
+    new_texts = []
+    aug = naw.SynonymAug(aug_src='wordnet', lang='eng')
+    # aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased')
+    cursor = 0
     for i in range(len(contexts)):
         augmented_context, change_log = aug.augment(contexts[i])
         new_contexts.append(augmented_context)
-        sorted_changes = sorted(change_log)
-        new_answers_starts_list_list.append([])
-        new_texts_list_list.append([])
-        for j in range(len(questions_list[i])):
-            new_answers_starts_list_list[i].append([])
-            new_texts_list_list[i].append([])
-            for k in range(len(texts_list_list[i][j])):
-                idx = find_stop_index(sorted_changes, answers_starts_list_list[i][j][k])
-                total_delta = 0
-                for l in range(idx):
-                    total_delta += sorted_changes[l]['new_start_pos'] - sorted_changes[l]['orig_start_pos']
-                new_answers_starts_list_list[i][j].append(answers_starts_list_list[i][j][k] + total_delta)
-                new_texts_list_list[i][j].append( \
-                    find_replaced_word(answers_starts_list_list[i][j][k], texts_list_list[i][j][k], sorted_changes))
-    return new_contexts, new_questions_list, new_answers_starts_list_list, new_texts_list_list
+        change_log.sort(key=lambda x: x['orig_start_pos'], reverse=False)
+        for j in range(answer_num_in_contexts[i]):
+            idx = find_stop_index(change_log, answer_starts[cursor])
+            total_delta = 0
+            for k in range(idx):
+                total_delta += change_log[k]['new_start_pos'] - change_log[k]['orig_start_pos']
+            new_answer_starts.append(answer_starts[cursor] + total_delta)
+            new_texts.append(find_replaced_word(answer_starts[cursor], texts[cursor], change_log))
+            cursor += 1
+    return new_contexts, new_questions, new_answer_starts, new_texts
 
 def main():
     print("Generating augment data")
@@ -118,7 +109,6 @@ def main():
     for file_path in file_paths:
         print("Processing: " + str(file_path))
         read_and_write(file_path)
-        break
 
 if __name__ == '__main__':
     main()
