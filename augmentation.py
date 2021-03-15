@@ -8,62 +8,6 @@ import nlpaug.flow as nafc
 
 from nlpaug.util import Action
 
-# ['data'][0]['paragraphs'][0]
-# - ['context']
-# - ['qas'][0]
-#   - ['questions']
-#   - ['answers'][0]
-#     - ['text']
-#     - ['answer_start']
-
-def read_and_write(path):
-    # 1D, context where the model finds answer from.
-    contexts = []
-    # 1D, for each context, there is a list of questions regarding this context.
-    questions = []
-    # 1D, for each question, there is a list of potential answers. Each of the answer has a character level starting
-    # index in the context.
-    answer_starts = []
-    # 1D, for each question, there is a list of potential answers. This is the text of the answer.
-    texts = []
-    # 1D
-    answer_num_in_contexts = []
-
-    f = open(path)
-    js = json.load(f)
-
-    for x in js['data']:
-        for y in x['paragraphs']:
-            contexts.append(y['context'])
-            cursor = 0
-            for z in y['qas']:
-                questions.append(z['question'])
-                for a in z['answers']:
-                    answer_starts.append(a['answer_start'])
-                    texts.append(a['text'])
-                    cursor += 1
-            answer_num_in_contexts.append(cursor)
-
-    print(len(contexts), len(questions), len(answer_starts), len(texts))
-    print(answer_num_in_contexts)
-
-    new_contexts, new_questions, new_answer_starts, new_texts = \
-        process(contexts, questions, answer_starts, texts, answer_num_in_contexts, js)
-
-    i, j = 0, 0
-    for x in range(len(js['data'])):
-        for y in range(len(js['data'][x]['paragraphs'])):
-            js['data'][x]['paragraphs'][y]['context'] = new_contexts[i]
-            for z in range(len(js['data'][x]['paragraphs'][y]['qas'])):
-                for a in range(len(js['data'][x]['paragraphs'][y]['qas'][z]['answers'])):
-                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['answer_start'] = new_answer_starts[j]
-                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['text'] = new_texts[j]
-                    j += 1
-            i += 1
-
-    outfile = open(str(path) + "_augmented", 'w')
-    json.dump(js, outfile)
-
 def find_stop_index(sorted_changes, value):
     for i in range(len(sorted_changes)):
         if value < sorted_changes[i]['orig_start_pos']:
@@ -86,7 +30,7 @@ def process(contexts, questions, answer_starts, texts, answer_num_in_contexts, j
     new_questions = questions
     new_answer_starts = []
     new_texts = []
-    aug = naw.SynonymAug(aug_src='wordnet', lang='eng')
+    aug = naw.SynonymAug(aug_src='wordnet', lang='eng', aug_min=1, aug_max=30, aug_p=0.3)
     # aug = naw.ContextualWordEmbsAug(model_path='bert-base-uncased')
     cursor = 0
     for i in range(len(contexts)):
@@ -103,12 +47,78 @@ def process(contexts, questions, answer_starts, texts, answer_num_in_contexts, j
             cursor += 1
     return new_contexts, new_questions, new_answer_starts, new_texts
 
+# ['data'][0]['paragraphs'][0]
+# - ['context']
+# - ['qas'][0]
+#   - ['questions']
+#   - ['answers'][0]
+#     - ['text']
+#     - ['answer_start']
+
+def read_and_write(js):
+    # 1D, context where the model finds answer from.
+    contexts = []
+    # 1D, for each context, there is a list of questions regarding this context.
+    questions = []
+    # 1D, for each question, there is a list of potential answers. Each of the answer has a character level starting
+    # index in the context.
+    answer_starts = []
+    # 1D, for each question, there is a list of potential answers. This is the text of the answer.
+    texts = []
+    # 1D
+    answer_num_in_contexts = []
+
+    for x in js['data']:
+        for y in x['paragraphs']:
+            contexts.append(y['context'])
+            cursor = 0
+            for z in y['qas']:
+                questions.append(z['question'])
+                for a in z['answers']:
+                    answer_starts.append(a['answer_start'])
+                    texts.append(a['text'])
+                    cursor += 1
+            answer_num_in_contexts.append(cursor)
+
+    new_contexts, new_questions, new_answer_starts, new_texts = \
+        process(contexts, questions, answer_starts, texts, answer_num_in_contexts, js)
+
+    i, j = 0, 0
+    for x in range(len(js['data'])):
+        for y in range(len(js['data'][x]['paragraphs'])):
+            js['data'][x]['paragraphs'][y]['context'] = new_contexts[i]
+            for z in range(len(js['data'][x]['paragraphs'][y]['qas'])):
+                for a in range(len(js['data'][x]['paragraphs'][y]['qas'][z]['answers'])):
+                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['answer_start'] = new_answer_starts[j]
+                    js['data'][x]['paragraphs'][y]['qas'][z]['answers'][a]['text'] = new_texts[j]
+                    j += 1
+            i += 1
+
+    return js
+
+def wrapper(path, aug_num):
+    f = open(path)
+    js = json.load(f)
+    f.close()
+    for i in range(aug_num):
+        print("======================== Augmentation", i, "========================")
+        f = open(path)
+        new_js = json.load(f)
+        f.close()
+        new_js = read_and_write(new_js)
+        for data in new_js['data']:
+            js['data'].append(data)
+
+    outfile = open(str(path) + "_augmented", 'w')
+    json.dump(js, outfile)
+
 def main():
     print("Generating augment data")
     file_paths = Path('oodomain_train').glob('*')
     for file_path in file_paths:
+        if str(file_path).find('augmented') != -1: continue
         print("Processing: " + str(file_path))
-        read_and_write(file_path)
+        wrapper(file_path, aug_num=19)
 
 if __name__ == '__main__':
     main()
